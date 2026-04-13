@@ -1,0 +1,13 @@
+# Runtime generated files (created and auto-deleted by scripts)
+launch-template-data.json
+target-tracking-config.json
+
+# AWS credentials / configs - never commit these
+.aws/
+*.pem
+*.key
+credentials
+
+# OS
+.DS_Store
+Thumbs.db
