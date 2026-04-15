@@ -3,6 +3,16 @@
 
 set -e
 
+# --- Error Handling Function ---
+function check_error() {
+    local exit_code=$?
+    local msg="$1"
+    if [ $exit_code -ne 0 ]; then
+        echo "[ERROR] $msg (exit code: $exit_code)" >&2
+        exit $exit_code
+    fi
+}
+
 # --- Windows Bash Compatibility Fix ---
 function aws_cli_wrapper() {
     if command -v aws.exe &> /dev/null; then
@@ -27,37 +37,55 @@ echo "================================================="
 echo "1. Creating Custom VPC and Network Infrastructure..."
 
 VPC_ID=$(aws ec2 create-vpc --cidr-block 10.0.0.0/16 --query "Vpc.VpcId" --output text)
+check_error "Failed to create VPC"
 aws ec2 create-tags --resources $VPC_ID --tags Key=Name,Value=cli-lab-vpc
+check_error "Failed to tag VPC $VPC_ID"
 aws ec2 modify-vpc-attribute --vpc-id $VPC_ID --enable-dns-hostnames "{\"Value\":true}"
+check_error "Failed to enable DNS hostnames for VPC $VPC_ID"
 echo "   -> Custom VPC Created: $VPC_ID"
 
 # Get 2 Availability Zones
 AZS=$(aws ec2 describe-availability-zones --query "AvailabilityZones[0:2].ZoneName" --output text)
+check_error "Failed to describe availability zones"
 # Cross-platform safe way to split into two variables
 AZ_ARRAY=($AZS)
 AZ_1=${AZ_ARRAY[0]}
 AZ_2=${AZ_ARRAY[1]}
 
 SUBNET_1=$(aws ec2 create-subnet --vpc-id $VPC_ID --cidr-block 10.0.1.0/24 --availability-zone $AZ_1 --query "Subnet.SubnetId" --output text)
+check_error "Failed to create subnet 1 in $AZ_1"
 aws ec2 create-tags --resources $SUBNET_1 --tags Key=Name,Value=cli-lab-subnet-1
+check_error "Failed to tag subnet 1 ($SUBNET_1)"
 aws ec2 modify-subnet-attribute --subnet-id $SUBNET_1 --map-public-ip-on-launch
+check_error "Failed to modify subnet 1 ($SUBNET_1) attributes"
 echo "   -> Subnet 1 Created ($AZ_1): $SUBNET_1"
 
 SUBNET_2=$(aws ec2 create-subnet --vpc-id $VPC_ID --cidr-block 10.0.2.0/24 --availability-zone $AZ_2 --query "Subnet.SubnetId" --output text)
+check_error "Failed to create subnet 2 in $AZ_2"
 aws ec2 create-tags --resources $SUBNET_2 --tags Key=Name,Value=cli-lab-subnet-2
+check_error "Failed to tag subnet 2 ($SUBNET_2)"
 aws ec2 modify-subnet-attribute --subnet-id $SUBNET_2 --map-public-ip-on-launch
+check_error "Failed to modify subnet 2 ($SUBNET_2) attributes"
 echo "   -> Subnet 2 Created ($AZ_2): $SUBNET_2"
 
 IGW_ID=$(aws ec2 create-internet-gateway --query "InternetGateway.InternetGatewayId" --output text)
+check_error "Failed to create Internet Gateway"
 aws ec2 create-tags --resources $IGW_ID --tags Key=Name,Value=cli-lab-igw
+check_error "Failed to tag Internet Gateway $IGW_ID"
 aws ec2 attach-internet-gateway --vpc-id $VPC_ID --internet-gateway-id $IGW_ID
+check_error "Failed to attach Internet Gateway $IGW_ID to VPC $VPC_ID"
 echo "   -> Internet Gateway Attached: $IGW_ID"
 
 RT_ID=$(aws ec2 create-route-table --vpc-id $VPC_ID --query "RouteTable.RouteTableId" --output text)
+check_error "Failed to create Route Table"
 aws ec2 create-tags --resources $RT_ID --tags Key=Name,Value=cli-lab-rt
+check_error "Failed to tag Route Table $RT_ID"
 aws ec2 create-route --route-table-id $RT_ID --destination-cidr-block 0.0.0.0/0 --gateway-id $IGW_ID > /dev/null
+check_error "Failed to create route in Route Table $RT_ID"
 aws ec2 associate-route-table --subnet-id $SUBNET_1 --route-table-id $RT_ID > /dev/null
+check_error "Failed to associate Route Table $RT_ID with Subnet 1 ($SUBNET_1)"
 aws ec2 associate-route-table --subnet-id $SUBNET_2 --route-table-id $RT_ID > /dev/null
+check_error "Failed to associate Route Table $RT_ID with Subnet 2 ($SUBNET_2)"
 echo "   -> Route Table Created and Associated"
 
 # 2. Get Amazon Linux 2023 AMI
@@ -65,6 +93,7 @@ echo "2. Finding latest Amazon Linux 2023 AMI..."
 AMI_ID=$(aws ec2 describe-images --owners amazon \
     --filters "Name=name,Values=al2023-ami-2023.*-x86_64" "Name=state,Values=available" \
     --query "sort_by(Images, &CreationDate)[-1].[ImageId]" --output text)
+check_error "Failed to find latest Amazon Linux 2023 AMI"
 echo "   -> Using AMI: $AMI_ID"
 
 # 3. Create Security Groups
@@ -74,9 +103,11 @@ ALB_SG_ID=$(aws ec2 create-security-group \
     --description "SG for Application Load Balancer" \
     --vpc-id $VPC_ID \
     --query "GroupId" --output text)
+check_error "Failed to create ALB Security Group"
 aws ec2 authorize-security-group-ingress \
     --group-id $ALB_SG_ID \
     --protocol tcp --port 80 --cidr 0.0.0.0/0
+check_error "Failed to authorize ingress for ALB Security Group $ALB_SG_ID"
 echo "   -> ALB Security Group Created: $ALB_SG_ID"
 
 EC2_SG_ID=$(aws ec2 create-security-group \
@@ -84,9 +115,11 @@ EC2_SG_ID=$(aws ec2 create-security-group \
     --description "SG for EC2 Instances in ASG" \
     --vpc-id $VPC_ID \
     --query "GroupId" --output text)
+check_error "Failed to create EC2 Security Group"
 aws ec2 authorize-security-group-ingress \
     --group-id $EC2_SG_ID \
     --protocol tcp --port 80 --source-group $ALB_SG_ID
+check_error "Failed to authorize ingress for EC2 Security Group $EC2_SG_ID"
 echo "   -> EC2 Security Group Created: $EC2_SG_ID"
 
 # 4. Create Target Group
@@ -102,6 +135,7 @@ TG_ARN=$(aws elbv2 create-target-group \
     --unhealthy-threshold-count 2 \
     --target-type instance \
     --query "TargetGroups[0].TargetGroupArn" --output text)
+check_error "Failed to create Target Group"
 echo "   -> Target Group ARN: $TG_ARN"
 
 # 5. Create Application Load Balancer
@@ -113,13 +147,16 @@ ALB_ARN=$(aws elbv2 create-load-balancer \
     --scheme internet-facing \
     --type application \
     --query "LoadBalancers[0].LoadBalancerArn" --output text)
+check_error "Failed to create Application Load Balancer"
 
 echo "   -> Waiting for ALB to become available (this takes ~3 mins)..."
 aws elbv2 wait load-balancer-available --load-balancer-arns $ALB_ARN
+check_error "ALB did not become available"
 
 ALB_DNS=$(aws elbv2 describe-load-balancers \
     --load-balancer-arns $ALB_ARN \
     --query "LoadBalancers[0].DNSName" --output text)
+check_error "Failed to get ALB DNS name"
 echo "   -> ALB Available. DNS Name: $ALB_DNS"
 
 # 6. Create Listener
@@ -128,6 +165,7 @@ aws elbv2 create-listener \
     --load-balancer-arn $ALB_ARN \
     --protocol HTTP --port 80 \
     --default-actions Type=forward,TargetGroupArn=$TG_ARN > /dev/null
+check_error "Failed to create ALB Listener"
 echo "   -> Listener created and forwarding to Target Group."
 
 # 7. Create Launch Template
@@ -147,6 +185,7 @@ aws ec2 create-launch-template \
     --launch-template-name cli-lab-launch-template \
     --version-description "v1" \
     --launch-template-data file://launch-template-data.json > /dev/null
+check_error "Failed to create Launch Template"
 rm launch-template-data.json
 echo "   -> Launch Template Created: cli-lab-launch-template"
 
@@ -160,6 +199,7 @@ aws autoscaling create-auto-scaling-group \
     --desired-capacity 2 \
     --vpc-zone-identifier "$SUBNET_1,$SUBNET_2" \
     --target-group-arns $TG_ARN > /dev/null
+check_error "Failed to create Auto Scaling Group"
 echo "   -> Auto Scaling Group created with Desired Capacity = 2."
 
 # 9. Create Scaling Policy
@@ -178,6 +218,7 @@ aws autoscaling put-scaling-policy \
     --policy-name cli-lab-cpu-tracking-policy \
     --policy-type TargetTrackingScaling \
     --target-tracking-configuration file://target-tracking-config.json > /dev/null
+check_error "Failed to create Target Tracking Scaling Policy"
 rm target-tracking-config.json
 echo "   -> CPU Target Tracking Policy set to 50%."
 
